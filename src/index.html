@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CineBook | Ticket Booking</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="card">
+    <h1 id="headline">CineBook Ticket Booking</h1>
+    <p class="sub">Pick your seats and see your total instantly.</p>
+
+    <label>Seat type
+      <select id="type">
+        <option value="standard">Standard (PKR 800)</option>
+        <option value="premium">Premium (PKR 1200)</option>
+        <option value="recliner">Recliner (PKR 1800)</option>
+      </select>
+    </label>
+
+    <label>Number of seats
+      <input id="seats" type="number" min="1" max="10" value="2" />
+    </label>
+
+    <label class="check"><input id="student" type="checkbox" /> Student (20% off)</label>
+
+    <div class="total">Total: <strong id="total">PKR 1600</strong></div>
+    <p id="error" class="error"></p>
+
+    <footer id="build">Version: loading...</footer>
+  </main>
+
+  <script src="pricing.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
