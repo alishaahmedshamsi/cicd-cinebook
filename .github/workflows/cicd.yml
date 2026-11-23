@@ -1,0 +1,131 @@
+name: CI/CD Pipeline (GitHub Actions -> S3 -> EC2)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VERSION: 1.0.${{ github.run_number }}
+
+jobs:
+  # ---------- BONUS: DevSecOps ----------
+  security-scan:
+    name: Security Scan (secrets + dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scanning (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Dependency vulnerability scan (npm audit)
+        run: |
+          npm install --package-lock-only --silent
+          npm audit --audit-level=high
+
+      - name: SAST (Semgrep)
+        run: |
+          pip install --quiet semgrep
+          semgrep scan --config p/javascript --error src/
+
+  # ---------- CI: unit tests ----------
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - name: Run Jest (pipeline fails if any test fails)
+        run: npm test
+
+  # ---------- CI: build + upload artifact to S3 ----------
+  build:
+    name: Build & Upload to S3
+    needs: [unit-test, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build package
+        env:
+          COMMIT: ${{ github.sha }}
+        run: bash scripts/build.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload build artifact to S3
+        run: |
+          aws s3 cp build-v${VERSION}.zip s3://${{ secrets.S3_BUCKET }}/builds/build-v${VERSION}.zip
+          aws s3 cp build-v${VERSION}.zip s3://${{ secrets.S3_BUCKET }}/builds/latest.zip
+          echo "Artifacts now in S3:"
+          aws s3 ls s3://${{ secrets.S3_BUCKET }}/builds/
+
+  # ---------- CD: deploy latest build from S3 to EC2 ----------
+  deploy:
+    name: Deploy Latest Build to EC2
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Generate short-lived download link for latest build
+        id: presign
+        run: |
+          URL=$(aws s3 presign s3://${{ secrets.S3_BUCKET }}/builds/latest.zip --expires-in 600)
+          echo "::add-mask::$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: EC2 pulls latest build from S3 and deploys it
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          URL: ${{ steps.presign.outputs.url }}
+        run: |
+          # Short-lived SSH key via EC2 Instance Connect (valid 60s, no stored private key)
+          ssh-keygen -t ed25519 -f key.pem -N "" -q
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" --instance-os-user "$USER" \
+            --ssh-public-key file://key.pem.pub
+          ssh -o StrictHostKeyChecking=no -i key.pem "$USER@$HOST" "
+            set -e
+            curl -fsSL '$URL' -o /tmp/latest.zip
+            sudo rm -rf /var/www/html/*
+            sudo unzip -oq /tmp/latest.zip -d /var/www/html
+            sudo systemctl reload nginx
+            echo 'Deployed version:' && cat /var/www/html/build-info.json
+          "
+          rm -f key.pem key.pem.pub
+
+      - name: Verify production
+        run: |
+          sleep 3
+          curl -fsS http://${{ secrets.EC2_HOST }}/build-info.json
+          curl -fsS http://${{ secrets.EC2_HOST }}/build-info.json | grep "\"${VERSION}\""
+          echo "Production is serving version ${VERSION}"
