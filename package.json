@@ -1,0 +1,13 @@
+{
+  "name": "cicd-cinema",
+  "version": "1.0.0",
+  "description": "CineBook ticket booking app deployed via GitHub Actions, S3 and EC2",
+  "private": true,
+  "scripts": {
+    "test": "jest --ci",
+    "build": "bash scripts/build.sh"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
